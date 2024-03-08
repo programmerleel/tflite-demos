@@ -52,19 +52,6 @@
       <string>标签文件路径：</string>
      </property>
     </widget>
-    <widget class="QGraphicsView" name="graphicsView_1">
-     <property name="geometry">
-      <rect>
-       <x>95</x>
-       <y>20</y>
-       <width>160</width>
-       <height>20</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true"/>
-     </property>
-    </widget>
     <widget class="QToolButton" name="toolButton_1">
      <property name="geometry">
       <rect>
@@ -78,19 +65,6 @@
       <string>选择</string>
      </property>
     </widget>
-    <widget class="QGraphicsView" name="graphicsView_2">
-     <property name="geometry">
-      <rect>
-       <x>95</x>
-       <y>45</y>
-       <width>160</width>
-       <height>20</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true"/>
-     </property>
-    </widget>
     <widget class="QToolButton" name="toolButton_2">
      <property name="geometry">
       <rect>
@@ -102,6 +76,38 @@
      </property>
      <property name="text">
       <string>选择</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_9">
+     <property name="geometry">
+      <rect>
+       <x>95</x>
+       <y>20</y>
+       <width>160</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true"/>
+     </property>
+     <property name="text">
+      <string/>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_10">
+     <property name="geometry">
+      <rect>
+       <x>95</x>
+       <y>45</y>
+       <width>160</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true"/>
+     </property>
+     <property name="text">
+      <string/>
      </property>
     </widget>
    </widget>
@@ -221,19 +227,6 @@
       <string>检测文件路径：</string>
      </property>
     </widget>
-    <widget class="QGraphicsView" name="graphicsView_3">
-     <property name="geometry">
-      <rect>
-       <x>95</x>
-       <y>20</y>
-       <width>160</width>
-       <height>20</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true"/>
-     </property>
-    </widget>
     <widget class="QToolButton" name="toolButton_3">
      <property name="geometry">
       <rect>
@@ -245,6 +238,22 @@
      </property>
      <property name="text">
       <string>选择</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_11">
+     <property name="geometry">
+      <rect>
+       <x>95</x>
+       <y>20</y>
+       <width>160</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true"/>
+     </property>
+     <property name="text">
+      <string/>
      </property>
     </widget>
    </widget>
@@ -299,19 +308,6 @@
       <string>结果文件路径：</string>
      </property>
     </widget>
-    <widget class="QGraphicsView" name="graphicsView_4">
-     <property name="geometry">
-      <rect>
-       <x>95</x>
-       <y>20</y>
-       <width>160</width>
-       <height>20</height>
-      </rect>
-     </property>
-     <property name="styleSheet">
-      <string notr="true"/>
-     </property>
-    </widget>
     <widget class="QToolButton" name="toolButton_4">
      <property name="geometry">
       <rect>
@@ -323,6 +319,22 @@
      </property>
      <property name="text">
       <string>选择</string>
+     </property>
+    </widget>
+    <widget class="QLabel" name="label_12">
+     <property name="geometry">
+      <rect>
+       <x>95</x>
+       <y>20</y>
+       <width>160</width>
+       <height>20</height>
+      </rect>
+     </property>
+     <property name="styleSheet">
+      <string notr="true"/>
+     </property>
+     <property name="text">
+      <string/>
      </property>
     </widget>
    </widget>
