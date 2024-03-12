@@ -26,11 +26,12 @@ import cv2
 class_names = ["hamlet","head"]
 counts = []
 
+# 产品
 class Product():
     def __init__(self):
         super().__init__()
 
-
+# 生产者 消费者
 class Processor():
     def __init__(self, previous_queue, next_queue):
         super().__init__()
@@ -45,22 +46,32 @@ class Processor():
     def process(self):
         pass
 
-
+# 预处理图像
 class PreProduct(Product):
-    def __init__(self, im, ratio, dw, dh, new_shape,count):
+    def __init__(self,im0, im, ratio, dw, dh, new_shape,count):
         super().__init__()
+        # 原图
+        self.im0 = im0
+        # 预处理图像
         self.im = im
+        # 缩放比例
         self.ratio = ratio
+        # 宽 padding（half）
         self.dw = dw
+        # 高 padding （half）
         self.dh = dh
+        # 缩放后尺寸
         self.new_shape = new_shape
+        # 队列中产品编号
         self.count = count
 
-
+# 图像预处理 生产者 消费者
 class PreProcessor(Processor):
+    # 消费读取视频队列 生产与处理图像队列
     def __init__(self, previous_queue=None, next_queue=None):
         super().__init__(previous_queue, next_queue)
 
+    # 开启线程
     def run(self):
         self.thread.start()
 
@@ -68,9 +79,12 @@ class PreProcessor(Processor):
         count = 0
         while True:
             try:
+                # 获取视频图像
                 image = self.previous_queue.get()
+                # 缩放
                 im, ratio, dw, dh, new_shape = self.letterbox(image)
-                self.next_queue.put(PreProduct(im, ratio, dw, dh, new_shape,count))
+                # 存入与处理队列
+                self.next_queue.put(PreProduct(image,im, ratio, dw, dh, new_shape,count))
                 count = count + 1
             except Exception as e:
                 print(e)
@@ -79,37 +93,29 @@ class PreProcessor(Processor):
         shape = im.shape[:2]
         if isinstance(new_shape, int):
             new_shape = (new_shape, new_shape)
-
         r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-
         ratio = r, r
         new_unpad = int(round(shape[1] * r)), int(round(shape[0] * r))
         dw, dh = new_shape[1] - new_unpad[0], new_shape[0] - new_unpad[1]  # wh padding
-
         dw /= 2
         dh /= 2
-
         if shape[::-1] != new_unpad:
             im = cv2.resize(im, new_unpad, interpolation=cv2.INTER_LINEAR)
         top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-        im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)  # add border
+        im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
         return im, ratio, dw, dh, new_shape
 
+# 推理结果
+class InferProduct(PreProduct):
+    def __init__(self, im0,im, ratio, dw, dh, new_shape,count,result):
+        super().__init__(im0,im, ratio, dw, dh, new_shape,count)
+        # 推理结果
+        self.result = result
 
-class InferProduct(Product):
-    def __init__(self, data, im, ratio, dw, dh, new_shape,count):
-        super().__init__()
-        self.data = data
-        self.im = im
-        self.ratio = ratio
-        self.dw = dw
-        self.dh = dh
-        self.new_shape = new_shape
-        self.count = count
-
-
+# 推理 生产者 消费者
 class InferProcessor(Processor):
+    # 消费预处理队列 生产结果队列
     def __init__(self, previous_queue=None, next_queue=None, model_path=None):
         super().__init__(previous_queue, next_queue)
         self.model_path = model_path
@@ -117,7 +123,7 @@ class InferProcessor(Processor):
         self.read_model = self.core.read_model(self.model_path)
         self.pop = ov.preprocess.PrePostProcessor(self.read_model)
         self.input_info = self.pop.input()
-        self.input_info.tensor().set_element_type(ov.runtime.Type.u8)
+        self.input_info.tensor().set_element_type(ov.runtime.Type.f32)
         self.model = self.pop.build()
         self.compile_model = self.core.compile_model(self.model)
         self.infer_request = self.compile_model.create_infer_request()
@@ -129,37 +135,31 @@ class InferProcessor(Processor):
         while True:
             try:
                 pre_product = self.previous_queue.get()
-                im = pre_product.im
-                ratio = pre_product.ratio
-                dw = pre_product.dw
-                dh = pre_product.dh
-                count = pre_product.count
-                new_shape = pre_product.new_shape
-                input_tensor = ov.Tensor(np.expand_dims(pre_product.im, 0).transpose((0,3,1,2)))
-                self.infer_request.set_input_tensor(input_tensor)
-                self.infer_request.infer()
-                output_tensor = self.infer_request.get_output_tensor()
-                result = output_tensor.data
+                result,im0,im,ratio,dw,dh,new_shape,count = self.infer(pre_product)
                 while True:
+                    # 由于在推理时使用了多个线程，推理速度不同，会导致队列顺序的变化，通过编号（count）来对线程进行阻塞
+                    # TODO 这个方法并不是最佳解决方案 长时间的视频（拉取摄像头资源 accounts会不断增加 导致内存爆炸） 需要寻找更合适的方法来解决放入队列顺序的问题
                     if count == len(counts):
                         counts.append(count)
-                        print(count)
-
-                        self.next_queue.put(InferProduct(im, ratio, dw, dh, new_shape, result,count))
+                        self.next_queue.put(InferProduct(im0,im, ratio, dw, dh, new_shape, count,result))
                         break
             except Exception as e:
                 print(e)
 
-class PostProduct(Product):
-    def __init__(self, im, ratio, dw, dh, new_shape,count):
-        super().__init__()
-        self.im = im
-        self.ratio = ratio
-        self.dw = dw
-        self.dh = dh
-        self.new_shape = new_shape
-        self.count = count
+    def infer(self,pre_product):
+        # 预处理图像转换模型输入
+        input_tensor = ov.Tensor(np.expand_dims(pre_product.im, 0).transpose((0, 3, 1, 2)).astype(np.float32)/255.0)
+        self.infer_request.set_input_tensor(input_tensor)
+        # 推理
+        self.infer_request.infer()
+        # 推理结果
+        output_tensor = self.infer_request.get_output_tensor()
+        result = output_tensor.data
+        return result,pre_product.im0,pre_product.im,pre_product.ratio,pre_product.dw,pre_product.dh,pre_product.new_shape,pre_product.count
 
+class PostProduct(InferProduct):
+    def __init__(self,im0, im, ratio, dw, dh, new_shape,count,result):
+        super().__init__(im0,im, ratio, dw, dh, new_shape,count,result)
 
 class PostProcessor(Processor):
     def __init__(self, previous_queue=None, next_queue=None):
@@ -170,48 +170,64 @@ class PostProcessor(Processor):
 
     def process(self):
         while True:
-            try:
-                infer_product = self.previous_queue.get()
-                im = infer_product.im
-                ratio = infer_product.ratio
-                dw = infer_product.dw
-                dh = infer_product.dh
-                count = infer_product.count
-                result = infer_product.data
-                new_shape = infer_product.new_shape
-                boxes = []
-                confidences = []
-                scores = []
-                ids = []
-                for i in range(result.shape[1]):
-                    confidence = result[i][4]
-                    if (confidence < 0.25):
-                        continue
-                    score = result[i][5:7]
-                    minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(score)
-                    if (maxVal>0.25):
-                        cx = result[i][0]
-                        cy = result[i][1]
-                        w = result[i][2]
-                        h = result[i][3]
-                        left = int((cx - w / 2 - dw) / ratio)
-                        top = int((cy - h / 2 - dh) / ratio)
-                        width = int(w / ratio)
-                        height = int(h / ratio)
-                        scores.append(maxVal)
-                        boxes.append([left,top,width,height])
-                        confidences.append(confidence)
-                        ids.append(maxLoc[0])
-                    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.45)
-                    for i in range(len(indices)):
-                        index = indices[i]
-                        id = ids[index]
-                        cv2.rectangle(im, boxes[index], (0,0,0), 2, 8)
-                        label = class_names[id]
-                        cv2.putText(im, label, (boxes[index][0],boxes[index][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, .5, (255,255,255))
-                    cv2.imshow("im", im)
-            except Exception as e:
-                print(e)
+            # try:
+            infer_product = self.previous_queue.get()
+            self.post(infer_product)
+
+            # except Exception as e:
+            #     print(e)
+
+    def post(self,infer_product):
+        im0 = infer_product.im0
+        im = infer_product.im
+        ratio = infer_product.ratio
+        dw = infer_product.dw
+        dh = infer_product.dh
+        count = infer_product.count
+        result = infer_product.result
+        new_shape = infer_product.new_shape
+
+        # 置信度 类别编号 得分 框
+        confidences,ids,scores,boxes = [],[],[],[]
+        # 遍历一张图的所有结果
+        for i in range(result.shape[1]):
+            # 取置信度
+            confidence = result[0][i][4]
+            # 先从置信度排除部分结果 减轻后续压力
+            if (confidence < 0.25):
+                continue
+            print(confidence)
+            # 不同类别得分
+            score = result[0][i][5:7]
+            minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(score)
+            # 判断类别得分
+            if (maxVal > 0.25):
+                cx = result[0][i][0]
+                cy = result[0][i][1]
+                w = result[0][i][2]
+                h = result[0][i][3]
+                left = int((float(cx) - float(w) / 2 - dw) / ratio[0])
+                top = int((float(cy) - float(h) / 2 - dh) / ratio[0])
+                width = int(float(w) / ratio[0])
+                height = int(float(h) / ratio[0])
+                scores.append(maxVal)
+                boxes.append([left, top, width, height])
+                confidences.append(confidence)
+                print(maxLoc)
+                ids.append(maxLoc[1])
+            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.45)
+            print(indices)
+            for i in range(len(indices)):
+                index = indices[i]
+                print(index)
+                id = ids[index]
+                print(id)
+                cv2.rectangle(im0, (boxes[index][0],boxes[index][1]),(boxes[index][0]+boxes[index][2],boxes[index][1]+boxes[index][3]), (0, 0, 0), 2, 8)
+                label = class_names[id]
+                cv2.putText(im0, label, (boxes[index][0], boxes[index][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, .5,
+                            (255, 255, 255))
+            cv2.imshow("im0", im0)
+            cv2.waitKey(0)
 
 
 # class Customer():
