@@ -4,32 +4,19 @@
 # @FileName: infer.py
 # @Software: PyCharm
 
-"""
-思路：生产者 消费者模型 + 流水线（队列串联）
-    图像前处理：转换到640*640尺寸 （消费者：从读取的图像队列取图像 生产者：将前处理图像放入队列）
-    openvino推理 （消费者：从前处理图像队列取图像 生产者：将推理结果放入队列）
-    结果后处理 （消费者：推理结果队列取结果 生产者：将后处理结果放入队列）
-    结果转换到匹配pyqt界面尺寸
-"""
-
-import multiprocessing as mp
+import base64
+import json
+import cv2
 import openvino as ov
+import yaml
 import queue
 from threading import Thread
-import numpy as np
-from math import tanh
-from time import time, sleep, perf_counter as pc
-from queue import Empty, Full
-
-import cv2
-
-class_names = ["hamlet","head"]
-counts = []
 
 # 产品
 class Product():
     def __init__(self):
         super().__init__()
+
 
 # 生产者 消费者
 class Processor():
@@ -42,13 +29,22 @@ class Processor():
         # 线程
         self.thread = Thread(target=self.process)
 
+    # 开启线程
+    def run(self):
+        self.thread.start()
+
+    # 关闭线程
+    def close(self):
+        self.thread.join()
+
     # 处理产品
     def process(self):
         pass
 
+
 # 预处理图像
 class PreProduct(Product):
-    def __init__(self,im0, im, ratio, dw, dh, new_shape,count):
+    def __init__(self, im0, im, ratio, dw, dh, new_shape, t):
         super().__init__()
         # 原图
         self.im0 = im0
@@ -62,8 +58,9 @@ class PreProduct(Product):
         self.dh = dh
         # 缩放后尺寸
         self.new_shape = new_shape
-        # 队列中产品编号
-        self.count = count
+        # 记录处理时间
+        self.t = t
+
 
 # 图像预处理 生产者 消费者
 class PreProcessor(Processor):
@@ -71,21 +68,18 @@ class PreProcessor(Processor):
     def __init__(self, previous_queue=None, next_queue=None):
         super().__init__(previous_queue, next_queue)
 
-    # 开启线程
-    def run(self):
-        self.thread.start()
-
     def process(self):
-        count = 0
         while True:
             try:
+                start = cv2.getTickCount()
                 # 获取视频图像
                 image = self.previous_queue.get()
                 # 缩放
                 im, ratio, dw, dh, new_shape = self.letterbox(image)
                 # 存入与处理队列
-                self.next_queue.put(PreProduct(image,im, ratio, dw, dh, new_shape,count))
-                count = count + 1
+                self.next_queue.put(PreProduct(image, im, ratio, dw, dh, new_shape,
+                                               (cv2.getTickCount() - start) / float(cv2.getTickFrequency())))
+                # print("pre:{}".format((cv2.getTickCount() - start) / float(cv2.getTickFrequency())))
             except Exception as e:
                 print(e)
 
@@ -104,14 +98,17 @@ class PreProcessor(Processor):
         top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
         left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
         im = cv2.copyMakeBorder(im, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+        im = cv2.dnn.blobFromImage(im, scalefactor=1.0, size=new_shape, swapRB=True, ddepth=cv2.CV_32F) / 255.0
         return im, ratio, dw, dh, new_shape
+
 
 # 推理结果
 class InferProduct(PreProduct):
-    def __init__(self, im0,im, ratio, dw, dh, new_shape,count,result):
-        super().__init__(im0,im, ratio, dw, dh, new_shape,count)
+    def __init__(self, im0, im, ratio, dw, dh, new_shape, t, result):
+        super().__init__(im0, im, ratio, dw, dh, new_shape, t)
         # 推理结果
         self.result = result
+
 
 # 推理 生产者 消费者
 class InferProcessor(Processor):
@@ -123,85 +120,91 @@ class InferProcessor(Processor):
         self.read_model = self.core.read_model(self.model_path)
         self.pop = ov.preprocess.PrePostProcessor(self.read_model)
         self.input_info = self.pop.input()
-        self.input_info.tensor().set_element_type(ov.runtime.Type.f32)
         self.model = self.pop.build()
         self.compile_model = self.core.compile_model(self.model)
         self.infer_request = self.compile_model.create_infer_request()
 
-    def run(self):
-        self.thread.start()
+    def process(self):
+        while True:
+            try:
+                start = cv2.getTickCount()
+                pre_product = self.previous_queue.get()
+                result, im0, im, ratio, dw, dh, new_shape, t = self.infer(pre_product)
+                self.next_queue.put(InferProduct(im0, im, ratio, dw, dh, new_shape,
+                                                 t + (cv2.getTickCount() - start) / float(cv2.getTickFrequency()),
+                                                 result))
+            except Exception as e:
+                print(e)
+
+    # TODO 解决推理开启多个线程的顺序问题
+    def infer(self, pre_product):
+        result = self.compile_model(pre_product.im)["output0"]
+        return result, pre_product.im0, pre_product.im, pre_product.ratio, pre_product.dw, pre_product.dh, pre_product.new_shape, pre_product.t
+
+
+class PostProduct(InferProduct):
+    def __init__(self, im0, im, ratio, dw, dh, new_shape, t, result):
+        super().__init__(im0, im, ratio, dw, dh, new_shape, t, result)
+
+
+class PostProcessor(Processor):
+    def __init__(self, previous_queue=None, next_queue=None,label_path=None,conf_thresh=None, score_thresh=None, nms_thresh=None,show_box=None, show_class=None, show_score=None):
+        super().__init__(previous_queue, next_queue)
+        self.label_path = label_path
+        self.conf_thresh = conf_thresh
+        self.score_thresh = score_thresh
+        self.nms_thresh = nms_thresh
+        self.show_box = show_box
+        self.show_class = show_class
+        self.show_score = show_score
+
+    def load_label(self):
+        label_file = open(self.label_path,"r")
+        contents = yaml.load(label_file,Loader=yaml.FullLoader)
+        # {'0': 'hamlet', '1': 'head'}
+        labels = contents["names"]
+        return labels
 
     def process(self):
         while True:
             try:
-                pre_product = self.previous_queue.get()
-                result,im0,im,ratio,dw,dh,new_shape,count = self.infer(pre_product)
-                while True:
-                    # 由于在推理时使用了多个线程，推理速度不同，会导致队列顺序的变化，通过编号（count）来对线程进行阻塞
-                    # TODO 这个方法并不是最佳解决方案 长时间的视频（拉取摄像头资源 accounts会不断增加 导致内存爆炸） 需要寻找更合适的方法来解决放入队列顺序的问题
-                    if count == len(counts):
-                        counts.append(count)
-                        self.next_queue.put(InferProduct(im0,im, ratio, dw, dh, new_shape, count,result))
-                        break
+                start = cv2.getTickCount()
+                infer_product = self.previous_queue.get()
+                im0, im, ratio, dw, dh, new_shape, t, result = self.post(infer_product)
+                self.next_queue.put(PostProduct(im0, im, ratio, dw, dh, new_shape,
+                                                t + (cv2.getTickCount() - start) / float(cv2.getTickFrequency()),
+                                                result))
             except Exception as e:
                 print(e)
 
-    def infer(self,pre_product):
-        # 预处理图像转换模型输入
-        input_tensor = ov.Tensor(np.expand_dims(pre_product.im, 0).transpose((0, 3, 1, 2)).astype(np.float32)/255.0)
-        self.infer_request.set_input_tensor(input_tensor)
-        # 推理
-        self.infer_request.infer()
-        # 推理结果
-        output_tensor = self.infer_request.get_output_tensor()
-        result = output_tensor.data
-        return result,pre_product.im0,pre_product.im,pre_product.ratio,pre_product.dw,pre_product.dh,pre_product.new_shape,pre_product.count
-
-class PostProduct(InferProduct):
-    def __init__(self,im0, im, ratio, dw, dh, new_shape,count,result):
-        super().__init__(im0,im, ratio, dw, dh, new_shape,count,result)
-
-class PostProcessor(Processor):
-    def __init__(self, previous_queue=None, next_queue=None):
-        super().__init__(previous_queue, next_queue)
-
-    def run(self):
-        self.thread.start()
-
-    def process(self):
-        while True:
-            # try:
-            infer_product = self.previous_queue.get()
-            self.post(infer_product)
-
-            # except Exception as e:
-            #     print(e)
-
-    def post(self,infer_product):
+    def post(self, infer_product):
         im0 = infer_product.im0
         im = infer_product.im
         ratio = infer_product.ratio
         dw = infer_product.dw
         dh = infer_product.dh
-        count = infer_product.count
-        result = infer_product.result
         new_shape = infer_product.new_shape
+        t = infer_product.t
+        result = infer_product.result
+
+        # 获取类别
+        labels = self.load_label()
 
         # 置信度 类别编号 得分 框
-        confidences,ids,scores,boxes = [],[],[],[]
-        # 遍历一张图的所有结果
+        confidences, ids, scores, boxes = [], [], [], []
+
+        # TODO 优化nms 减少循环
         for i in range(result.shape[1]):
             # 取置信度
             confidence = result[0][i][4]
             # 先从置信度排除部分结果 减轻后续压力
-            if (confidence < 0.25):
+            if (confidence < self.conf_thresh):
                 continue
-            print(confidence)
             # 不同类别得分
             score = result[0][i][5:7]
             minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(score)
             # 判断类别得分
-            if (maxVal > 0.25):
+            if (maxVal > self.score_thresh):
                 cx = result[0][i][0]
                 cy = result[0][i][1]
                 w = result[0][i][2]
@@ -213,36 +216,71 @@ class PostProcessor(Processor):
                 scores.append(maxVal)
                 boxes.append([left, top, width, height])
                 confidences.append(confidence)
-                print(maxLoc)
                 ids.append(maxLoc[1])
-            indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.25, 0.45)
-            print(indices)
-            for i in range(len(indices)):
-                index = indices[i]
-                print(index)
-                id = ids[index]
-                print(id)
-                cv2.rectangle(im0, (boxes[index][0],boxes[index][1]),(boxes[index][0]+boxes[index][2],boxes[index][1]+boxes[index][3]), (0, 0, 0), 2, 8)
-                label = class_names[id]
+        indices = cv2.dnn.NMSBoxes(boxes, confidences, self.score_thresh, self.nms_thresh)
+        results = {}
+        for i in range(len(indices)):
+            index = indices[i]
+            id = ids[index]
+            label = labels[id]
+            if label not in results.keys():
+                results[label] = 1
+            else:
+                results[label] = results[label] + 1
+            # 显示box
+            if self.show_box:
+                cv2.rectangle(im0, (boxes[index][0], boxes[index][1]),
+                          (boxes[index][0] + boxes[index][2], boxes[index][1] + boxes[index][3]), (255//(id+1), 255//(id+2), 255//(id+3)), 1, 8)
+            if self.show_class:
                 cv2.putText(im0, label, (boxes[index][0], boxes[index][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, .5,
-                            (255, 255, 255))
-            cv2.imshow("im0", im0)
-            cv2.waitKey(0)
+                            (255 // (id + 2), 255 // (id + 3), 255 // (id + 4)))
+            if self.show_score:
+                score = scores[id]
+                cv2.putText(im0, "{:.2f}".format(score), (boxes[index][0]+50, boxes[index][1] - 10), cv2.FONT_HERSHEY_SIMPLEX, .5,
+                            (255 // (id + 2), 255 // (id + 3), 255 // (id + 4)))
+            detect_all,detect_head = 0,0
+            for key,value in results.items():
+                if key == "head":
+                    detect_head = value
+                detect_all = detect_all + value
+            cv2.putText(im0, "检测到{}人，{}人未佩戴安全帽！".format(detect_all,detect_head), (0, 0), cv2.FONT_HERSHEY_SIMPLEX, 2,
+                        (0,0,255))
+            # TODO FPS并不准确，计算了各个阶段的时间，但是由于整个流程是以流水线形式进行，各个阶段会存在重叠，可以最后计算总的FPS
+            return im0, im, ratio, dw, dh, new_shape, t, result
 
+class SendProcessor(Processor):
+    def __init__(self, previous_queue=None, next_queue=None,complete_video_signal=None):
+        super().__init__(previous_queue, next_queue)
+        self.complete_video_signal = complete_video_signal
 
-# class Customer():
-#     def __init__(self, processes):
-#         super().__init__()
-#         # 产品来源
-#         self.previous_queue = None
-#         # 产品去向
-#         self.nets_queue = None
-#         # 线程
-#         self.threads = [Thread(target=self.process) for _ in range(processes)]
-#
-#     # 处理产品
-#     def process(self):
-#         pass
+    def run(self):
+        self.thread.start()
+
+    def process(self):
+        while True:
+            try:
+                start = cv2.getTickCount()
+                post_product = self.previous_queue.get()
+                im0, im, ratio, dw, dh, new_shape, t, result = post_product.im0, post_product.im, post_product.ratio, post_product.dw, post_product.dh, post_product.new_shape, post_product.t, post_product.result
+                # 转换图像
+                image_json = self.image2json(im0)
+                # 向主线程发送信号
+                self.complete_video_signal.emit(image_json)
+                cv2.waitKey(1)
+                # self.next_queue.put(PostProduct(im0, im, ratio, dw, dh, new_shape,
+                #                                  t + (cv2.getTickCount() - start) / float(cv2.getTickFrequency()),
+                #                                  result))
+                # print("post:{}".format((cv2.getTickCount() - start) / float(cv2.getTickFrequency())))
+            except Exception as e:
+                print(e)
+
+    def image2json(self,image):
+        retval, buf = cv2.imencode(".jpg",image)
+        buf2bytes = base64.b64encode(buf)
+        bytes2str = buf2bytes.decode("ascii")
+        str2json = json.dumps({"image_json":bytes2str})
+        return str2json
+
 
 if __name__ == '__main__':
     path = r"D:\data\test_01.mp4"
@@ -251,35 +289,23 @@ if __name__ == '__main__':
     pre_queue = queue.Queue()
     infer_queue = queue.Queue()
     post_queue = queue.Queue()
-    # TODO 开启多个线程 导致顺序改变 需要同步
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    InferProcessor(pre_queue, infer_queue,
-                   r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml").run()
-    PostProcessor(infer_queue).run()
-    PreProcessor(image_queue, pre_queue).run()
-
-    # while True:
-    #     try:
-    #         item = pre_image_queue.get()
-    #         print(item)
-    #     except Exception:
-    #         pass
+    infer_processor = InferProcessor(pre_queue, infer_queue,
+                                     r"C:\yolov5-hamlet-detection\yolov5\runs\train\exp\weights\best_openvino_model\best.xml")
+    infer_processor.run()
+    post_processor = PostProcessor(infer_queue, post_queue)
+    post_processor.run()
+    pre_processor = PreProcessor(image_queue, pre_queue)
+    pre_processor.run()
+    ret = True
     while True:
         # 读取到图像帧之后 传入推理接口 后续图像处理 推理 后处理等在infer中进行多线程处理
         ret, frame = cap.read()
         if ret is False:
             break
         image_queue.put(frame)
+
+    while True:
+        if image_queue.empty() and pre_queue.empty() and infer_queue.empty and not ret:
+            infer_processor.close()
+            post_processor.close()
+            pre_processor.close()

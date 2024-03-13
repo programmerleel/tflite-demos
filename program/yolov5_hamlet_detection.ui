@@ -180,13 +180,6 @@
       </widget>
      </item>
      <item>
-      <widget class="QCheckBox" name="checkBox_2">
-       <property name="text">
-        <string>显示Fps</string>
-       </property>
-      </widget>
-     </item>
-     <item>
       <widget class="QCheckBox" name="checkBox_3">
        <property name="text">
         <string>显示类别</string>

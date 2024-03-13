@@ -4,6 +4,13 @@
 # @FileName: main.py
 # @Software: PyCharm
 
+# TODO 精度问题 与pytorch原生检测精度上有差距
+# TODO 最终结果从队列取出展示 需要调整尺寸
+# TODO 字体显示的颜色需要调整
+# TODO 线程启动时 卡顿
+# TODO 视频检测完成后 停止视频（kill thread）绑定按钮
+# TODO 结果按钮
+
 import base64
 import cv2
 import json
@@ -39,14 +46,14 @@ class DetectionMainWindow(QMainWindow,Ui_MainWindow):
         self.toolButton_3.clicked.connect(lambda: self.select_file(self.toolButton_3.objectName()))
         # 绑定选择结果文件夹
         self.toolButton_4.clicked.connect(lambda: self.select_file(self.toolButton_4.objectName()))
+        # 主线程绑定函数
+        self.complete_video_signal.connect(self.view_video)
         # 创建子线程
         self.video_thread = VideoThread(self.complete_video_signal)
         # 运行子线程
         self.video_thread.start()
         # 向子线程发送信号
         self.pushButton_1.clicked.connect(self.open_video)
-        # 主线程绑定函数
-        self.complete_video_signal.connect(self.view_video)
 
     # 设置文件路径回显label样式
     def set_style(self):
@@ -100,29 +107,49 @@ class DetectionMainWindow(QMainWindow,Ui_MainWindow):
         self.doubleSpinBox_2.setValue(0.25)
         self.doubleSpinBox_3.setValue(0.45)
 
+    # 获取输入文件
+    def get_file(self):
+        file_path = self.label_11.text()
+        return file_path
+
+    # 获取权重文件路径与标签文件路径
+    def get_path(self):
+        model_path = self.label_9.text()
+        label_path = self.label_10.text()
+        return model_path,label_path
+
     # 获取阈值
     def get_threshold(self):
-        pass
+        conf_thresh = self.doubleSpinBox_1.value()
+        score_thresh = self.doubleSpinBox_2.value()
+        nms_thresh = self.doubleSpinBox_3.value()
+        return conf_thresh,score_thresh,nms_thresh
 
     # 设置默认显示设置
     def set_show(self):
         self.checkBox_1.setChecked(True)
         self.checkBox_1.setEnabled(False)
-        self.checkBox_2.setChecked(True)
         self.checkBox_3.setChecked(True)
         self.checkBox_4.setChecked(True)
 
     # 获取显示设置
     def get_show(self):
-        pass
+        show_box = self.checkBox_1.isChecked()
+        show_class = self.checkBox_3.isChecked()
+        show_score = self.checkBox_4.isChecked()
+        return show_box,show_class,show_score
 
     def open_video(self):
         # 发送读取视频的信号
-        self.video_thread.open_video_signal.emit(self.label_11.text())
+        file_path = self.get_file()
+        model_path,label_path = self.get_path()
+        conf_thresh, score_thresh, nms_thresh = self.get_threshold()
+        show_box, show_class, show_score = self.get_show()
+        self.video_thread.open_video_signal.emit([file_path,model_path,label_path,conf_thresh, score_thresh, nms_thresh,show_box, show_class, show_score])
 
     # TODO 显示图像时 固定MainWindow和label的高度，按照label的高度来转换宽度，label和MainWindow按照转换的宽度自由伸缩
     def view_video(self,json_data):
-        image = self.json2image(json_data)
+        image = cv2.resize(self.json2image(json_data),(self.label_8.height(),self.label_8.width()))
         q_image = QImage(image, image.shape[1], image.shape[0], QImage.Format_RGB888).rgbSwapped()
         pixmap = QPixmap.fromImage(q_image)
         self.label_8.setPixmap(pixmap)
