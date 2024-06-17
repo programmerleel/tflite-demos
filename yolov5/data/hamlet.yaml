@@ -1,8 +1,0 @@
-path: ./dataset/hamlet
-train: train.txt
-val: val.txt
-test: test.txt
-
-names:
-  0: hamlet
-  1: head
